@@ -23,6 +23,7 @@ import {
 import {
     AppIcons,
     Docking,
+    FolderStacks,
     Theming,
     Utils,
 } from './imports.js';
@@ -259,6 +260,10 @@ export const DockDash = GObject.registerClass({
             'changed',
             this._queueRedisplay.bind(this),
         ], [
+            Docking.DockManager.settings,
+            'changed::folder-stacks',
+            this._queueRedisplay.bind(this),
+        ], [
             this._appSystem,
             'app-state-changed',
             this._queueRedisplay.bind(this),
@@ -371,6 +376,13 @@ export const DockDash = GObject.registerClass({
     }
 
     handleDragOver(source, actor, x, y, time) {
+        if (FolderStacks.extractFolderUrisFromDropSource(source).length) {
+            const dropResult = DND.DragMotionResult.COPY_DROP ??
+                DND.DragMotionResult.MOVE_DROP ??
+                DND.DragMotionResult.CONTINUE;
+            return dropResult;
+        }
+
         let ret;
         if (this._isHorizontal) {
             ret = Dash.Dash.prototype.handleDragOver.call(this, source, actor, x, y, time);
@@ -431,8 +443,42 @@ export const DockDash = GObject.registerClass({
         return ret;
     }
 
-    acceptDrop(...args) {
-        return Dash.Dash.prototype.acceptDrop.call(this, ...args);
+    acceptDrop(source, actor, x, y, time) {
+        if (Dash.Dash.prototype.acceptDrop.call(this, source, actor, x, y, time))
+            return true;
+
+        return this._acceptFolderStackDrop(source);
+    }
+
+    _acceptFolderStackDrop(source) {
+        const uris = FolderStacks.extractFolderUrisFromDropSource(source);
+        if (!uris.length)
+            return false;
+
+        const settings = Docking.DockManager.settings;
+        const existing = new Set(settings.get_strv('folder-stacks'));
+        let added = false;
+
+        uris.forEach(uri => {
+            const file = Gio.File.new_for_uri(uri);
+            try {
+                if (file.query_file_type(Gio.FileQueryInfoFlags.NONE, null) !==
+                    Gio.FileType.DIRECTORY)
+                    return;
+            } catch (error) {
+                return;
+            }
+
+            if (!existing.has(uri)) {
+                existing.add(uri);
+                added = true;
+            }
+        });
+
+        if (added)
+            settings.set_strv('folder-stacks', [...existing]);
+
+        return added;
     }
 
     _onWindowDragBegin(...args) {
@@ -567,6 +613,32 @@ export const DockDash = GObject.registerClass({
         return item;
     }
 
+    _createFolderStackItem(uri) {
+        const folderItem = new FolderStacks.FolderStackItem(uri, this.iconSize);
+        const item = new DockDashItemContainer(this._position);
+        item.setChild(folderItem);
+
+        folderItem.connect('menu-state-changed', (_icon, opened) => {
+            this._itemMenuStateChanged(item, opened);
+        });
+        folderItem.connect('notify::hover', a => this._ensureItemVisibility(a));
+        folderItem.connect('clicked', actor => {
+            ensureActorVisibleInScrollView(this._scrollView, actor);
+        });
+
+        item.setLabelText(folderItem.name ?? uri);
+        this._hookUpLabel(item, folderItem);
+
+        return item;
+    }
+
+    _createDashItem(item) {
+        if (typeof item === 'string')
+            return this._createFolderStackItem(item);
+
+        return this._createAppItem(item);
+    }
+
     _requireVisibility() {
         this.requiresVisibility = true;
 
@@ -590,6 +662,7 @@ export const DockDash = GObject.registerClass({
         // the animation)
         const iconChildren = this._box.get_children().filter(actor => {
             return actor.child &&
+                   actor.child._delegate?.app &&
                    !!actor.child.icon &&
                    !actor.animatingOut;
         });
@@ -776,10 +849,13 @@ export const DockDash = GObject.registerClass({
         const children = this._box.get_children().filter(actor => {
             return actor.child &&
                    actor.child._delegate &&
-                   actor.child._delegate.app;
+                   (actor.child._delegate.app ||
+                    actor.child._delegate.folderStackUri);
         });
         // Apps currently in the dash
-        let oldApps = children.map(actor => actor.child._delegate.app);
+        const oldItems = children.map(actor =>
+            actor.child._delegate.app ?? actor.child._delegate.folderStackUri);
+        let oldApps = oldItems.filter(item => item?.get_id);
         // Apps supposed to be in the dash
         const newApps = [];
 
@@ -828,6 +904,9 @@ export const DockDash = GObject.registerClass({
             oldApps = oldApps.filter(app => !app.isTrash);
         }
 
+        const folderStackUris = Docking.DockManager.settings.folderStacks ?? [];
+        const newItems = [...newApps, ...new Set(folderStackUris.filter(Boolean))];
+
         // Temporary remove the separator so that we don't compute to position icons
         const oldSeparatorPos = this._box.get_children().indexOf(this._separator);
         if (this._separator)
@@ -855,29 +934,29 @@ export const DockDash = GObject.registerClass({
 
         let newIndex = 0;
         let oldIndex = 0;
-        while (newIndex < newApps.length || oldIndex < oldApps.length) {
-            const oldApp = oldApps.length > oldIndex ? oldApps[oldIndex] : null;
-            const newApp = newApps.length > newIndex ? newApps[newIndex] : null;
+        while (newIndex < newItems.length || oldIndex < oldItems.length) {
+            const oldItem = oldItems.length > oldIndex ? oldItems[oldIndex] : null;
+            const newItem = newItems.length > newIndex ? newItems[newIndex] : null;
 
             // No change at oldIndex/newIndex
-            if (oldApp === newApp) {
+            if (oldItem === newItem) {
                 oldIndex++;
                 newIndex++;
                 continue;
             }
 
             // App removed at oldIndex
-            if (oldApp && !newApps.includes(oldApp)) {
+            if (oldItem && !newItems.includes(oldItem)) {
                 removedActors.push(children[oldIndex]);
                 oldIndex++;
                 continue;
             }
 
             // App added at newIndex
-            if (newApp && !oldApps.includes(newApp)) {
+            if (newItem && !oldItems.includes(newItem)) {
                 addedItems.push({
-                    app: newApp,
-                    item: this._createAppItem(newApp),
+                    app: newItem,
+                    item: this._createDashItem(newItem),
                     pos: newIndex,
                 });
                 newIndex++;
@@ -885,19 +964,20 @@ export const DockDash = GObject.registerClass({
             }
 
             // App moved
-            const nextApp = newApps.length > newIndex + 1
-                ? newApps[newIndex + 1] : null;
-            const insertHere = nextApp && nextApp === oldApp;
+            const nextItem = newItems.length > newIndex + 1
+                ? newItems[newIndex + 1] : null;
+            const insertHere = nextItem && nextItem === oldItem;
             const alreadyRemoved = removedActors.reduce((result, actor) => {
-                const removedApp = actor.child._delegate.app;
-                return result || removedApp === newApp;
+                const removedItem = actor.child._delegate.app ??
+                    actor.child._delegate.folderStackUri;
+                return result || removedItem === newItem;
             }, false);
 
             if (insertHere || alreadyRemoved) {
-                const newItem = this._createAppItem(newApp);
+                const newDashItem = this._createDashItem(newItem);
                 addedItems.push({
-                    app: newApp,
-                    item: newItem,
+                    app: newItem,
+                    item: newDashItem,
                     pos: newIndex + removedActors.length,
                 });
                 newIndex++;

@@ -512,3 +512,43 @@ $dock_style_modes: [null, shrink, extended, extended-shrink];
         background-size: contain;
     }
 }
+
+.folder-stack-popup {
+    padding: 0px;
+}
+
+.folder-stack-popup-content {
+    padding: $base_padding;
+    spacing: $base_padding;
+}
+
+.folder-stack-popup-header {
+    spacing: $base_padding;
+    padding: 0px $base_padding $base_padding $base_padding;
+}
+
+.folder-stack-popup-title {
+    font-weight: bold;
+}
+
+.folder-stack-scroll-view {
+    min-width: 300px;
+    min-height: 240px;
+}
+
+.folder-stack-grid {
+    padding: $base_padding;
+}
+
+.folder-stack-item {
+    width: 96px;
+}
+
+.folder-stack-item-content {
+    spacing: 6px;
+}
+
+.folder-stack-item-label {
+    text-align: center;
+    max-width: 96px;
+}

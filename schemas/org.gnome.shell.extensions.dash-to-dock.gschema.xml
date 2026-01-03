@@ -256,6 +256,11 @@
       <summary>Show favorites apps</summary>
       <description>Show or hide favorite applications icons in the dash</description>
     </key>
+    <key type="as" name="folder-stacks">
+      <default>[]</default>
+      <summary>Folder stacks</summary>
+      <description>List of folder URIs shown as folder stack items in the dock.</description>
+    </key>
     <key type="b" name="show-trash">
       <default>true</default>
       <summary>Show trash can</summary>
